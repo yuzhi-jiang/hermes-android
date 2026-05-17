@@ -1,8 +1,11 @@
 package com.hermesandroid.bridge.media
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -10,6 +13,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Base64
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 object ScreenRecorder {
@@ -115,5 +119,100 @@ object ScreenRecorder {
 
     fun release() {
         handlerThread.quitSafely()
+    }
+
+    fun screenshot(): Map<String, Any?> {
+        val service = BridgeAccessibilityService.instance
+            ?: return mapOf("success" to false, "message" to "Accessibility service not running")
+        val proj = projection
+            ?: return mapOf("success" to false, "message" to "No MediaProjection. Grant screen recording permission first.")
+
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val resultHolder = arrayOf<Map<String, Any?>?>(null)
+
+        handler.post {
+            var imageReader: ImageReader? = null
+            var virtualDisplay: VirtualDisplay? = null
+            var image: android.media.Image? = null
+            try {
+                val metrics = service.resources.displayMetrics
+                val width = metrics.widthPixels
+                val height = metrics.heightPixels
+                val density = metrics.densityDpi
+
+                imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+                virtualDisplay = proj.createVirtualDisplay(
+                    "Screenshot", width, height, density,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    imageReader.surface, null, handler
+                )
+
+                for (i in 0 until 20) {
+                    Thread.sleep(50)
+                    image = imageReader.acquireLatestImage()
+                    if (image != null) break
+                }
+
+                val img = image
+                if (img == null) {
+                    resultHolder[0] = mapOf("success" to false, "message" to "Failed to capture screen")
+                    return@post
+                }
+
+                val planes = img.planes[0]
+                val buffer = planes.buffer
+                val rowStride = planes.rowStride
+                val pixelStride = planes.pixelStride
+
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                if (rowStride == width * pixelStride) {
+                    buffer.rewind()
+                    bitmap.copyPixelsFromBuffer(buffer)
+                } else {
+                    for (y in 0 until height) {
+                        buffer.position(y * rowStride)
+                        val rowBytes = ByteArray(width * pixelStride)
+                        buffer.get(rowBytes)
+                        bitmap.setPixels(
+                            IntArray(width) { x ->
+                                val off = x * pixelStride
+                                (rowBytes[off + 3].toInt() and 0xFF shl 24) or
+                                (rowBytes[off].toInt() and 0xFF shl 16) or
+                                (rowBytes[off + 1].toInt() and 0xFF shl 8) or
+                                (rowBytes[off + 2].toInt() and 0xFF)
+                            },
+                            0, width, 0, y, width, 1
+                        )
+                    }
+                }
+
+                val stream = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 50, stream)
+                val base64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+                bitmap.recycle()
+
+                resultHolder[0] = mapOf(
+                    "success" to true,
+                    "message" to "Screenshot captured",
+                    "data" to mapOf(
+                        "image" to base64,
+                        "width" to width,
+                        "height" to height,
+                        "format" to "jpeg",
+                        "encoding" to "base64"
+                    )
+                )
+            } catch (e: Exception) {
+                resultHolder[0] = mapOf("success" to false, "message" to "Screenshot failed: ${e.javaClass.simpleName}: ${e.message}")
+            } finally {
+                image?.close()
+                virtualDisplay?.release()
+                imageReader?.close()
+                latch.countDown()
+            }
+        }
+
+        latch.await(10, java.util.concurrent.TimeUnit.SECONDS)
+        return resultHolder[0] ?: mapOf("success" to false, "message" to "Screenshot timed out")
     }
 }

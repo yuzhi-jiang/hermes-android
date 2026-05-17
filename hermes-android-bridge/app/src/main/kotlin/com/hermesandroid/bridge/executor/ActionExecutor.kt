@@ -14,6 +14,7 @@ import android.telephony.SmsManager
 import android.util.Base64
 import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
+import com.hermesandroid.bridge.media.ScreenRecorder
 import com.hermesandroid.bridge.model.ActionResult
 import com.hermesandroid.bridge.model.ScreenNode
 import com.hermesandroid.bridge.model.computeHash
@@ -217,54 +218,58 @@ object ActionExecutor {
     }
 
     suspend fun takeScreenshot(): ActionResult {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            return ActionResult(false, "Screenshot requires Android 11 (API 30) or higher")
-        }
         val service = BridgeAccessibilityService.instance
             ?: return ActionResult(false, "Accessibility service not running")
 
-        return suspendCancellableCoroutine { cont ->
-            val executor = Executor { it.run() }
-            service.takeScreenshot(
-                Display.DEFAULT_DISPLAY,
-                executor,
-                object : AccessibilityService.TakeScreenshotCallback {
-                    override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                        val hwBitmap = Bitmap.wrapHardwareBuffer(
-                            result.hardwareBuffer, result.colorSpace
-                        )
-                        if (hwBitmap == null) {
-                            cont.resume(ActionResult(false, "Failed to create bitmap"))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return suspendCancellableCoroutine { cont ->
+                val executor = Executor { it.run() }
+                service.takeScreenshot(
+                    Display.DEFAULT_DISPLAY,
+                    executor,
+                    object : AccessibilityService.TakeScreenshotCallback {
+                        override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                            val hwBitmap = Bitmap.wrapHardwareBuffer(
+                                result.hardwareBuffer, result.colorSpace
+                            )
+                            if (hwBitmap == null) {
+                                cont.resume(ActionResult(false, "Failed to create bitmap"))
+                                result.hardwareBuffer.close()
+                                return
+                            }
+                            val bitmap = hwBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                            hwBitmap.recycle()
                             result.hardwareBuffer.close()
-                            return
+
+                            val w = bitmap.width
+                            val h = bitmap.height
+                            val stream = ByteArrayOutputStream()
+                            bitmap.compress(Bitmap.CompressFormat.JPEG, 50, stream)
+                            val base64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+                            bitmap.recycle()
+
+                            cont.resume(ActionResult(true, "Screenshot captured", mapOf(
+                                "image" to base64,
+                                "width" to w,
+                                "height" to h,
+                                "format" to "jpeg",
+                                "encoding" to "base64"
+                            )))
                         }
-                        // Convert to software bitmap for compression
-                        val bitmap = hwBitmap.copy(Bitmap.Config.ARGB_8888, false)
-                        hwBitmap.recycle()
-                        result.hardwareBuffer.close()
 
-                        val w = bitmap.width
-                        val h = bitmap.height
-                        val stream = ByteArrayOutputStream()
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 50, stream)
-                        val base64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
-                        bitmap.recycle()
-
-                        cont.resume(ActionResult(true, "Screenshot captured", mapOf(
-                            "image" to base64,
-                            "width" to w,
-                            "height" to h,
-                            "format" to "jpeg",
-                            "encoding" to "base64"
-                        )))
+                        override fun onFailure(errorCode: Int) {
+                            cont.resume(ActionResult(false, "Screenshot failed with error code $errorCode"))
+                        }
                     }
-
-                    override fun onFailure(errorCode: Int) {
-                        cont.resume(ActionResult(false, "Screenshot failed with error code $errorCode"))
-                    }
-                }
-            )
+                )
+            }
         }
+
+        // Fallback for Android 10 and below: use MediaProjection + ImageReader
+        val result = ScreenRecorder.screenshot()
+        val success = result["success"] as? Boolean ?: false
+        val message = result["message"] as? String ?: "Unknown error"
+        return ActionResult(success, message, result["data"] as? Map<String, Any?>)
     }
 
     fun getInstalledApps(): List<Map<String, String>> {

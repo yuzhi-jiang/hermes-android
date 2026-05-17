@@ -89,6 +89,13 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_CODE_SCREEN_RECORD) {
             if (resultCode == RESULT_OK && data != null) {
+                val service = BridgeAccessibilityService.instance
+                if (service == null) {
+                    Toast.makeText(this, "Please enable Accessibility Service first", Toast.LENGTH_LONG).show()
+                    updatePermissionSwitches()
+                    return
+                }
+                service.startForeground()
                 val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 val projection = mpm.getMediaProjection(resultCode, data)
                 if (projection != null) {
@@ -119,9 +126,18 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun isAccessibilityEnabled(): Boolean {
+        if (BridgeAccessibilityService.instance != null) return true
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabledServices.contains("com.hermesandroid.bridge/.service.BridgeAccessibilityService")
+    }
+
     private fun setupPermissions() {
         switchAccessibility.setOnCheckedChangeListener { _, isChecked ->
-            if (isChecked && BridgeAccessibilityService.instance == null) {
+            if (isChecked && !isAccessibilityEnabled()) {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         }
@@ -154,7 +170,7 @@ class MainActivity : Activity() {
         switchOverlay.setOnCheckedChangeListener(null)
         switchScreenRecord.setOnCheckedChangeListener(null)
 
-        switchAccessibility.isChecked = BridgeAccessibilityService.instance != null
+        switchAccessibility.isChecked = isAccessibilityEnabled()
         switchOverlay.isChecked = Settings.canDrawOverlays(this)
         switchScreenRecord.isChecked = ScreenRecorder.hasPermission()
 
@@ -229,12 +245,18 @@ class MainActivity : Activity() {
 
     private fun updateStatus() {
         val serviceRunning = BridgeAccessibilityService.instance != null
+        val a11yEnabled = isAccessibilityEnabled()
         val relayConnected = RelayClient.isConnected
 
-        tvA11yStatus.text = if (serviceRunning) "active" else "inactive"
-        tvA11yStatus.setTextColor(if (serviceRunning) 0xFF4CAF50.toInt() else 0xFF888888.toInt())
+        tvA11yStatus.text = if (serviceRunning) "active" else if (a11yEnabled) "enabled" else "inactive"
+        tvA11yStatus.setTextColor(
+            if (serviceRunning) 0xFF4CAF50.toInt()
+            else if (a11yEnabled) 0xFFFFA726.toInt()
+            else 0xFF888888.toInt()
+        )
         indicatorA11y.setBackgroundResource(
-            if (serviceRunning) R.drawable.bg_status_dot_green else R.drawable.bg_status_dot_grey
+            if (serviceRunning) R.drawable.bg_status_dot_green
+            else R.drawable.bg_status_dot_grey
         )
 
         tvServerStatus.text = "8765"

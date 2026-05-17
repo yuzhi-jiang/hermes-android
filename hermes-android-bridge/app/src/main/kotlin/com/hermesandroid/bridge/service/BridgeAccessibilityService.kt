@@ -16,6 +16,7 @@ class BridgeAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        startForeground()
         serviceInfo = serviceInfo.apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                     AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
